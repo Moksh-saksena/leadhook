@@ -12,6 +12,30 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const BASE_URL = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
 
 const sessions = {};
+const audioStore = {};
+
+// =============================
+// OUTBOUND CALL TRIGGER
+// =============================
+app.get("/call", async (req, res) => {
+  try {
+    const client = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
+
+    await client.calls.create({
+      to: "+919606746900", // change if needed
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/voice`
+    });
+
+    res.send("Calling lead...");
+  } catch (err) {
+    console.error("CALL ERROR:", err.message);
+    res.status(500).send("Failed to call");
+  }
+});
 
 // =============================
 // VOICE ENTRY
@@ -19,7 +43,6 @@ const sessions = {};
 app.post("/voice", async (req, res) => {
   const callSid = req.body.CallSid;
 
-  // DO NOT RESET if already exists
   if (!sessions[callSid]) {
     sessions[callSid] = {
       is_interested: null,
@@ -30,9 +53,9 @@ app.post("/voice", async (req, res) => {
   }
 
   const greeting =
-    "Hi, this is from the property team. Just checking, are you still looking for a property?";
+    "Hi, this is from the property team. Are you still looking for a property?";
 
-  await generateAndPlay(greeting, res, true);
+  await generateAndPlay(greeting, res, true, callSid);
 });
 
 // =============================
@@ -77,7 +100,7 @@ Update:
 - timeline
 - location_preference
 
-Then decide the next natural question.
+Then decide next natural short question.
 If qualification complete OR not interested → should_end=true.
 
 Return ONLY JSON:
@@ -118,7 +141,8 @@ ${cleanedTranscript}
     await generateAndPlay(
       result.next_message,
       res,
-      !result.should_end
+      !result.should_end,
+      callSid
     );
 
     if (result.should_end) {
@@ -133,9 +157,22 @@ ${cleanedTranscript}
 });
 
 // =============================
-// TTS + RESPONSE
+// DYNAMIC AUDIO ROUTE (STABLE)
 // =============================
-async function generateAndPlay(text, res, continueGather) {
+app.get("/dynamic-audio", (req, res) => {
+  const callSid = req.query.callSid;
+  const audio = audioStore[callSid];
+
+  if (!audio) return res.status(404).send("No audio");
+
+  res.set("Content-Type", "audio/mpeg");
+  res.send(audio);
+});
+
+// =============================
+// TTS GENERATION
+// =============================
+async function generateAndPlay(text, res, continueGather, callSid) {
   try {
     const response = await axios({
       method: "post",
@@ -157,16 +194,11 @@ async function generateAndPlay(text, res, continueGather) {
       responseType: "arraybuffer"
     });
 
-    const audioBuffer = response.data;
-
-    // Serve dynamic audio
-    app.get("/dynamic-audio", (req2, res2) => {
-      res2.set("Content-Type", "audio/mpeg");
-      res2.send(audioBuffer);
-    });
+    audioStore[callSid] = response.data;
 
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.play(`${BASE_URL}/dynamic-audio`);
+
+    twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
 
     if (continueGather) {
       twiml.gather({
@@ -176,6 +208,8 @@ async function generateAndPlay(text, res, continueGather) {
         speechTimeout: "auto",
         timeout: 4
       });
+    } else {
+      twiml.hangup();
     }
 
     res.type("text/xml");
@@ -186,25 +220,7 @@ async function generateAndPlay(text, res, continueGather) {
     res.status(500).send("Error");
   }
 }
-app.get("/call", async (req, res) => {
-  try {
-    const client = twilio(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_AUTH_TOKEN
-    );
 
-    await client.calls.create({
-      to: "+919606746900",  // your test number
-      from: process.env.TWILIO_PHONE_NUMBER,
-      url: `${BASE_URL}/voice`
-    });
-
-    res.send("Calling lead...");
-  } catch (err) {
-    console.error("CALL ERROR:", err.message);
-    res.status(500).send("Failed to call");
-  }
-});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
