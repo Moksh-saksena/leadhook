@@ -88,31 +88,21 @@ app.post("/process-speech", async (req, res) => {
         {
           role: "system",
           content: `
-You are a real estate AI qualification engine.
+You are a real estate AI.
 
-Given:
-1) Current session state
-2) New user response
-
-Update:
+Update session fields:
 - is_interested
 - budget_range
 - timeline
 - location_preference
 
-Then decide next natural short question.
-If qualification complete OR not interested → should_end=true.
+Ask next short question if needed.
+End if not interested or complete.
 
-Return ONLY JSON:
-
+Return JSON:
 {
-  "updated_session": {
-    "is_interested": true/false/null,
-    "budget_range": string|null,
-    "timeline": string|null,
-    "location_preference": string|null
-  },
-  "next_message": "short natural response under 15 words",
+  "updated_session": {...},
+  "next_message": "...",
   "should_end": true/false
 }
 `
@@ -187,9 +177,9 @@ async function generateAndPlay(text, res, continueGather, callSid) {
         speaker: "ritu",
         model: "bulbul:v3",
         pace: 1.0,
-        speech_sample_rate: 22050,
+        speech_sample_rate: 16000,
         output_audio_codec: "mp3",
-        enable_preprocessing: true
+        enable_preprocessing: false
       },
       responseType: "arraybuffer"
     });
@@ -206,7 +196,8 @@ async function generateAndPlay(text, res, continueGather, callSid) {
         action: "/process-speech",
         method: "POST",
         speechTimeout: "auto",
-        timeout: 4
+        timeout: 1,
+        bargeIn: true
       });
     } else {
       twiml.hangup();
