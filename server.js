@@ -186,7 +186,25 @@ async function generateAndPlay(text, res, continueGather) {
     res.status(500).send("Error");
   }
 }
+app.get("/call", async (req, res) => {
+  try {
+    const client = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
 
+    await client.calls.create({
+      to: "+919606746900",  // your test number
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/voice`
+    });
+
+    res.send("Calling lead...");
+  } catch (err) {
+    console.error("CALL ERROR:", err.message);
+    res.status(500).send("Failed to call");
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
