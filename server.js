@@ -15,6 +15,13 @@ const sessions = {};
 const audioStore = {};
 
 // =============================
+// ROOT (Prevents Railway health issues)
+// =============================
+app.get("/", (req, res) => {
+  res.send("LeadHook Voice AI Running");
+});
+
+// =============================
 // OUTBOUND CALL TRIGGER
 // =============================
 app.get("/call", async (req, res) => {
@@ -25,7 +32,7 @@ app.get("/call", async (req, res) => {
     );
 
     await client.calls.create({
-      to: "+919606746900", // change if needed
+      to: "+919606746900",
       from: process.env.TWILIO_PHONE_NUMBER,
       url: `${BASE_URL}/voice`
     });
@@ -67,20 +74,18 @@ app.post("/process-speech", async (req, res) => {
     const transcript = req.body.SpeechResult;
 
     if (!transcript) {
-      return res.send("No speech detected");
+      // If no speech, ask again
+      return generateAndPlay(
+        "Sorry, I didn't catch that. Could you repeat?",
+        res,
+        true,
+        callSid
+      );
     }
 
     console.log("User said:", transcript);
 
-    let cleanedTranscript = transcript
-      .replace(/KS/gi, "crore")
-      .replace(/k s/gi, "crore")
-      .replace(/cr/gi, "crore")
-      .replace(/lakhs?/gi, "lakh");
-
     const session = sessions[callSid];
-
-    console.log("Session BEFORE:", session);
 
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -90,7 +95,7 @@ app.post("/process-speech", async (req, res) => {
           content: `
 You are a real estate AI.
 
-Update session fields:
+Update:
 - is_interested
 - budget_range
 - timeline
@@ -114,7 +119,7 @@ Current session:
 ${JSON.stringify(session)}
 
 User said:
-${cleanedTranscript}
+${transcript}
 `
         }
       ]
@@ -124,9 +129,7 @@ ${cleanedTranscript}
 
     sessions[callSid] = result.updated_session;
 
-    console.log("Session AFTER:", sessions[callSid]);
-    console.log("Next Message:", result.next_message);
-    console.log("Should End:", result.should_end);
+    console.log("Updated Session:", sessions[callSid]);
 
     await generateAndPlay(
       result.next_message,
@@ -141,13 +144,13 @@ ${cleanedTranscript}
     }
 
   } catch (err) {
-    console.error("ERROR:", err.message);
+    console.error("PROCESS ERROR:", err.message);
     res.status(500).send("Error");
   }
 });
 
 // =============================
-// DYNAMIC AUDIO ROUTE (STABLE)
+// DYNAMIC AUDIO ROUTE
 // =============================
 app.get("/dynamic-audio", (req, res) => {
   const callSid = req.query.callSid;
@@ -160,7 +163,7 @@ app.get("/dynamic-audio", (req, res) => {
 });
 
 // =============================
-// TTS GENERATION
+// TTS + TWIML
 // =============================
 async function generateAndPlay(text, res, continueGather, callSid) {
   try {
@@ -193,12 +196,14 @@ async function generateAndPlay(text, res, continueGather, callSid) {
         input: "speech",
         action: "/process-speech",
         method: "POST",
-        speechTimeout: "auto",
         timeout: 1,
-        bargeIn: true
+        speechTimeout: "auto"
       });
 
       gather.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
+
+      // 🔥 CRITICAL FALLBACK
+      twiml.redirect("/voice");
     } else {
       twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
       twiml.hangup();
@@ -212,6 +217,7 @@ async function generateAndPlay(text, res, continueGather, callSid) {
     res.status(500).send("Error");
   }
 }
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
