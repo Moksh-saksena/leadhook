@@ -3,41 +3,31 @@ const express = require("express");
 const { OpenAI } = require("openai");
 const twilio = require("twilio");
 const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
-const BASE_URL = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+
 const app = express();
 app.use(express.urlencoded({ extended: false }));
-app.use(express.static(path.join(__dirname)));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 🔥 In-memory session store (replace with Firebase later)
+const BASE_URL = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+
 const sessions = {};
 
-app.get("/call", async (req, res) => {
-  const client = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-  );
-
-  await client.calls.create({
-    to: "+919606746900",
-    from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${BASE_URL}/voice`,
-  });
-
-  res.send("Calling lead...");
-});
-
+// =============================
+// VOICE ENTRY
+// =============================
 app.post("/voice", async (req, res) => {
   const callSid = req.body.CallSid;
-  sessions[callSid] = {
-    is_interested: null,
-    budget_range: null,
-    timeline: null,
-    location_preference: null,
-  };
+
+  // DO NOT RESET if already exists
+  if (!sessions[callSid]) {
+    sessions[callSid] = {
+      is_interested: null,
+      budget_range: null,
+      timeline: null,
+      location_preference: null,
+    };
+  }
 
   const greeting =
     "Hi, this is from the property team. Just checking, are you still looking for a property?";
@@ -45,6 +35,9 @@ app.post("/voice", async (req, res) => {
   await generateAndPlay(greeting, res, true);
 });
 
+// =============================
+// PROCESS SPEECH
+// =============================
 app.post("/process-speech", async (req, res) => {
   try {
     const callSid = req.body.CallSid;
@@ -54,6 +47,8 @@ app.post("/process-speech", async (req, res) => {
       return res.send("No speech detected");
     }
 
+    console.log("User said:", transcript);
+
     let cleanedTranscript = transcript
       .replace(/KS/gi, "crore")
       .replace(/k s/gi, "crore")
@@ -61,6 +56,8 @@ app.post("/process-speech", async (req, res) => {
       .replace(/lakhs?/gi, "lakh");
 
     const session = sessions[callSid];
+
+    console.log("Session BEFORE:", session);
 
     const ai = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -74,16 +71,16 @@ Given:
 1) Current session state
 2) New user response
 
-Update the session fields:
+Update:
 - is_interested
 - budget_range
 - timeline
 - location_preference
 
-Then decide the next natural conversational question.
-If qualification complete OR not interested → set should_end=true.
+Then decide the next natural question.
+If qualification complete OR not interested → should_end=true.
 
-Return ONLY JSON in this format:
+Return ONLY JSON:
 
 {
   "updated_session": {
@@ -92,7 +89,7 @@ Return ONLY JSON in this format:
     "timeline": string|null,
     "location_preference": string|null
   },
-  "next_message": "string",
+  "next_message": "short natural response under 15 words",
   "should_end": true/false
 }
 `
@@ -114,11 +111,18 @@ ${cleanedTranscript}
 
     sessions[callSid] = result.updated_session;
 
-    console.log("Updated Session:", sessions[callSid]);
+    console.log("Session AFTER:", sessions[callSid]);
+    console.log("Next Message:", result.next_message);
+    console.log("Should End:", result.should_end);
 
-    await generateAndPlay(result.next_message, res, !result.should_end);
+    await generateAndPlay(
+      result.next_message,
+      res,
+      !result.should_end
+    );
 
     if (result.should_end) {
+      console.log("Final Lead:", sessions[callSid]);
       delete sessions[callSid];
     }
 
@@ -127,6 +131,10 @@ ${cleanedTranscript}
     res.status(500).send("Error");
   }
 });
+
+// =============================
+// TTS + RESPONSE
+// =============================
 async function generateAndPlay(text, res, continueGather) {
   try {
     const response = await axios({
@@ -151,8 +159,8 @@ async function generateAndPlay(text, res, continueGather) {
 
     const audioBuffer = response.data;
 
-    // Save in memory (temporary)
-    app.get("/dynamic-audio", (req, res2) => {
+    // Serve dynamic audio
+    app.get("/dynamic-audio", (req2, res2) => {
       res2.set("Content-Type", "audio/mpeg");
       res2.send(audioBuffer);
     });
@@ -179,6 +187,7 @@ async function generateAndPlay(text, res, continueGather) {
   }
 }
 
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
 });
