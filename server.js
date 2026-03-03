@@ -191,21 +191,19 @@ async function generateAndPlay(text, res, continueGather, callSid) {
 
     const twiml = new twilio.twiml.VoiceResponse();
 
+    // ✅ PLAY FULL AUDIO FIRST
+    twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
+
     if (continueGather) {
-      const gather = twiml.gather({
+      // ✅ THEN LISTEN
+      twiml.gather({
         input: "speech",
         action: "/process-speech",
         method: "POST",
-        timeout: 1,
+        timeout: 2,
         speechTimeout: "auto"
       });
-
-      gather.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
-
-      // 🔥 CRITICAL FALLBACK
-      twiml.redirect("/voice");
     } else {
-      twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
       twiml.hangup();
     }
 
@@ -217,7 +215,6 @@ async function generateAndPlay(text, res, continueGather, callSid) {
     res.status(500).send("Error");
   }
 }
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
