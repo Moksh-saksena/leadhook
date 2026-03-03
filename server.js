@@ -8,45 +8,33 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const BASE_URL = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
 
 const sessions = {};
 const audioStore = {};
 
-// =============================
-// ROOT (Prevents Railway health issues)
-// =============================
+// Root
 app.get("/", (req, res) => {
   res.send("LeadHook Voice AI Running");
 });
 
-// =============================
-// OUTBOUND CALL TRIGGER
-// =============================
+// Outbound trigger
 app.get("/call", async (req, res) => {
-  try {
-    const client = twilio(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_AUTH_TOKEN
-    );
+  const client = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+  );
 
-    await client.calls.create({
-      to: "+919606746900",
-      from: process.env.TWILIO_PHONE_NUMBER,
-      url: `${BASE_URL}/voice`
-    });
+  await client.calls.create({
+    to: "+919606746900",
+    from: process.env.TWILIO_PHONE_NUMBER,
+    url: `${BASE_URL}/voice`
+  });
 
-    res.send("Calling lead...");
-  } catch (err) {
-    console.error("CALL ERROR:", err.message);
-    res.status(500).send("Failed to call");
-  }
+  res.send("Calling lead...");
 });
 
-// =============================
-// VOICE ENTRY
-// =============================
+// Entry
 app.post("/voice", async (req, res) => {
   const callSid = req.body.CallSid;
 
@@ -62,96 +50,88 @@ app.post("/voice", async (req, res) => {
   const greeting =
     "Hi, this is from the property team. Are you still looking for a property?";
 
-  await generateAndPlay(greeting, res, true, callSid);
+  await generateAudio(greeting, callSid);
+
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
+  twiml.redirect("/listen"); // 🔥 critical
+
+  res.type("text/xml").send(twiml.toString());
 });
 
-// =============================
-// PROCESS SPEECH
-// =============================
+// Listening endpoint
+app.post("/listen", (req, res) => {
+  const twiml = new twilio.twiml.VoiceResponse();
+
+  twiml.gather({
+    input: "speech",
+    action: "/process-speech",
+    method: "POST",
+    timeout: 3,
+    speechTimeout: "auto"
+  });
+
+  res.type("text/xml").send(twiml.toString());
+});
+
+// Process speech
 app.post("/process-speech", async (req, res) => {
-  try {
-    const callSid = req.body.CallSid;
-    const transcript = req.body.SpeechResult;
+  const callSid = req.body.CallSid;
+  const transcript = req.body.SpeechResult;
 
-    if (!transcript) {
-      // If no speech, ask again
-      return generateAndPlay(
-        "Sorry, I didn't catch that. Could you repeat?",
-        res,
-        true,
-        callSid
-      );
-    }
+  if (!transcript) {
+    return res.redirect("/listen");
+  }
 
-    console.log("User said:", transcript);
+  console.log("User said:", transcript);
 
-    const session = sessions[callSid];
+  const session = sessions[callSid];
 
-    const ai = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-You are a real estate AI.
-
-Update:
-- is_interested
-- budget_range
-- timeline
-- location_preference
-
-Ask next short question if needed.
-End if not interested or complete.
-
+  const ai = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+Update session fields.
+Ask next short question.
 Return JSON:
 {
-  "updated_session": {...},
-  "next_message": "...",
-  "should_end": true/false
-}
+ "updated_session": {...},
+ "next_message": "...",
+ "should_end": true/false
+}`
+      },
+      {
+        role: "user",
+        content: `
+Session: ${JSON.stringify(session)}
+User said: ${transcript}
 `
-        },
-        {
-          role: "user",
-          content: `
-Current session:
-${JSON.stringify(session)}
+      }
+    ]
+  });
 
-User said:
-${transcript}
-`
-        }
-      ]
-    });
+  const result = JSON.parse(ai.choices[0].message.content);
 
-    const result = JSON.parse(ai.choices[0].message.content);
+  sessions[callSid] = result.updated_session;
 
-    sessions[callSid] = result.updated_session;
+  await generateAudio(result.next_message, callSid);
 
-    console.log("Updated Session:", sessions[callSid]);
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
 
-    await generateAndPlay(
-      result.next_message,
-      res,
-      !result.should_end,
-      callSid
-    );
-
-    if (result.should_end) {
-      console.log("Final Lead:", sessions[callSid]);
-      delete sessions[callSid];
-    }
-
-  } catch (err) {
-    console.error("PROCESS ERROR:", err.message);
-    res.status(500).send("Error");
+  if (!result.should_end) {
+    twiml.redirect("/listen");
+  } else {
+    twiml.hangup();
+    delete sessions[callSid];
   }
+
+  res.type("text/xml").send(twiml.toString());
 });
 
-// =============================
-// DYNAMIC AUDIO ROUTE
-// =============================
+// Audio route
 app.get("/dynamic-audio", (req, res) => {
   const callSid = req.query.callSid;
   const audio = audioStore[callSid];
@@ -162,59 +142,31 @@ app.get("/dynamic-audio", (req, res) => {
   res.send(audio);
 });
 
-// =============================
-// TTS + TWIML
-// =============================
-async function generateAndPlay(text, res, continueGather, callSid) {
-  try {
-    const response = await axios({
-      method: "post",
-      url: "https://api.sarvam.ai/text-to-speech/stream",
-      headers: {
-        "api-subscription-key": process.env.SARVAM_API_KEY,
-        "Content-Type": "application/json"
-      },
-      data: {
-        text,
-        target_language_code: "en-IN",
-        speaker: "ritu",
-        model: "bulbul:v3",
-        pace: 1.0,
-        speech_sample_rate: 16000,
-        output_audio_codec: "mp3",
-        enable_preprocessing: false
-      },
-      responseType: "arraybuffer"
-    });
+// TTS generator
+async function generateAudio(text, callSid) {
+  const response = await axios({
+    method: "post",
+    url: "https://api.sarvam.ai/text-to-speech/stream",
+    headers: {
+      "api-subscription-key": process.env.SARVAM_API_KEY,
+      "Content-Type": "application/json"
+    },
+    data: {
+      text,
+      target_language_code: "en-IN",
+      speaker: "ritu",
+      model: "bulbul:v3",
+      pace: 1.0,
+      speech_sample_rate: 16000,
+      output_audio_codec: "mp3",
+      enable_preprocessing: false
+    },
+    responseType: "arraybuffer"
+  });
 
-    audioStore[callSid] = response.data;
-
-    const twiml = new twilio.twiml.VoiceResponse();
-
-    // ✅ PLAY FULL AUDIO FIRST
-    twiml.play(`${BASE_URL}/dynamic-audio?callSid=${callSid}`);
-
-    if (continueGather) {
-      // ✅ THEN LISTEN
-      twiml.gather({
-        input: "speech",
-        action: "/process-speech",
-        method: "POST",
-        timeout: 2,
-        speechTimeout: "auto"
-      });
-    } else {
-      twiml.hangup();
-    }
-
-    res.type("text/xml");
-    res.send(twiml.toString());
-
-  } catch (err) {
-    console.error("TTS ERROR:", err.message);
-    res.status(500).send("Error");
-  }
+  audioStore[callSid] = response.data;
 }
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
