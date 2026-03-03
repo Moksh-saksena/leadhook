@@ -5,7 +5,7 @@ const twilio = require("twilio");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-
+const BASE_URL = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname)));
@@ -24,7 +24,7 @@ app.get("/call", async (req, res) => {
   await client.calls.create({
     to: "+919606746900",
     from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${process.env.BASE_URL}/voice`,
+    url: `${BASE_URL}/voice`,
   });
 
   res.send("Calling lead...");
@@ -158,7 +158,7 @@ async function generateAndPlay(text, res, continueGather) {
     });
 
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.play(`${process.env.BASE_URL}/dynamic-audio`);
+    twiml.play(`${BASE_URL}/dynamic-audio`);
 
     if (continueGather) {
       twiml.gather({
